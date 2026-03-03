@@ -44,6 +44,7 @@ QUY TẮC BẮT BUỘC:
 - Trả lời NGẮN GỌN, đi thẳng vào nội dung, KHÔNG lan man hay giải thích dài dòng
 - SỬ DỤNG NGUYÊN VĂN câu từ trong nguồn tham khảo càng nhiều càng tốt, KHÔNG diễn đạt lại (paraphrase)
 - GIỮ NGUYÊN thuật ngữ, tên riêng, số liệu chính xác từ nguồn
+- QUAN TRỌNG: Các tính năng chung (thanh toán tự động, liên kết ngân hàng, nạp tiền...) hoạt động GIỐNG NHAU cho tất cả dịch vụ (tiền điện, tiền nước, viễn thông...). Nếu nguồn mô tả quy trình chung, HÃY ÁP DỤNG cho dịch vụ cụ thể trong câu hỏi
 - Nếu KHÔNG có nguồn nào phù hợp → trả lời: "Mình chưa có thông tin về vấn đề này. Vui lòng liên hệ hotline 18001091 (nhánh 3)."
 - KHÔNG thêm bước hoặc thông tin mà context KHÔNG đề cập
 - KHÔNG thêm heading, tiêu đề, markdown bold/italic nếu nguồn không có
@@ -204,7 +205,9 @@ Trả lời:"""
             
             # Detect "no info" responses from LLM synthesis
             # When contexts are irrelevant, the LLM correctly says it has no info.
-            # Return the more helpful LOW_CONFIDENCE template instead of the bare message.
+            # But if the Decision Engine already determined DIRECT_ANSWER with good confidence,
+            # it means the contexts DO have relevant info — fall back to direct answer
+            # instead of escalating (the LLM may reject due to category mismatch).
             NO_INFO_MARKERS = [
                 "chưa có thông tin",
                 "không có thông tin phù hợp",
@@ -213,6 +216,11 @@ Trả lời:"""
             ]
             response_lower = response_text.lower()
             if any(marker in response_lower for marker in NO_INFO_MARKERS):
+                # If decision was DIRECT_ANSWER/ANSWER_WITH_CLARIFY, trust the decision engine
+                # and fall back to the top context's direct answer
+                if decision.type in [DecisionType.DIRECT_ANSWER, DecisionType.ANSWER_WITH_CLARIFY] and contexts:
+                    logger.info("LLM synthesis returned 'no info' but decision engine says DIRECT_ANSWER — falling back to top context")
+                    return self._generate_direct_answer(decision, contexts[0], user_question)
                 logger.info("LLM synthesis returned 'no info' — switching to LOW_CONFIDENCE template")
                 return self._generate_escalation_low_confidence()
             

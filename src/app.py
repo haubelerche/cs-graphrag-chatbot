@@ -35,6 +35,8 @@ def _reset_metrics():
         # Reset counters và gauges
         r.set("metrics:counter:requests_total", 0)
         r.set("metrics:counter:errors_total", 0)
+        # Reset active sessions (clear set + gauge)
+        r.delete("metrics:active_session_ids")
         r.set("metrics:gauge:active_sessions", 0)
         # Reset decision counters
         for decision in ["direct_answer", "answer_with_clarify", "clarify_required", "escalate_low_confidence", "escalate_out_of_domain"]:
@@ -43,6 +45,8 @@ def _reset_metrics():
         r.delete("metrics:histogram:request_latency_ms")
         r.delete("metrics:histogram:confidence_score")
         r.delete("metrics:histogram:response_latency")
+        # Clear RPM timestamps
+        r.delete("metrics:request_timestamps")
         logger.info("Metrics đã được reset")
     except Exception as e:
         logger.warning(f"Không thể reset metrics: {e}")
@@ -95,17 +99,17 @@ async def on_chat_start():
     session_id = cl.user_session.get("id")
     cl.user_session.set("session_id", session_id)
     
-    # Tăng active_sessions
+    # Luôn tracking active sessions qua Redis (không phụ thuộc monitoring flag)
     try:
-        bot = get_pipeline()
-        if bot.monitoring:
-            bot.monitoring.metrics.increment("active_sessions_counter")
-            # Đọc giá trị hiện tại và set gauge
-            import redis
-            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-            r = redis.from_url(redis_url, decode_responses=True)
-            current = int(r.get("metrics:counter:active_sessions_counter") or 0)
-            r.set("metrics:gauge:active_sessions", current)
+        import redis as redis_lib
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        r = redis_lib.from_url(redis_url, decode_responses=True)
+        # Dùng Redis SET để tracking chính xác số session đang active
+        r.sadd("metrics:active_session_ids", session_id)
+        # Cập nhật gauge cho Prometheus/Grafana
+        active_count = r.scard("metrics:active_session_ids")
+        r.set("metrics:gauge:active_sessions", active_count)
+        logger.info(f"Active sessions: {active_count} (added {session_id})")
     except Exception as e:
         logger.warning(f"Không thể cập nhật active_sessions: {e}")
     
@@ -260,15 +264,14 @@ async def on_chat_end():
             bot = get_pipeline()
             bot.clear_session(session_id)
             
-            # Giảm active_sessions
-            if bot.monitoring:
-                import redis
-                redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-                r = redis.from_url(redis_url, decode_responses=True)
-                current = int(r.get("metrics:counter:active_sessions_counter") or 0)
-                new_count = max(0, current - 1)
-                r.set("metrics:counter:active_sessions_counter", new_count)
-                r.set("metrics:gauge:active_sessions", new_count)
+            # Luôn giảm active_sessions qua Redis
+            import redis as redis_lib
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            r = redis_lib.from_url(redis_url, decode_responses=True)
+            r.srem("metrics:active_session_ids", session_id)
+            active_count = r.scard("metrics:active_session_ids")
+            r.set("metrics:gauge:active_sessions", active_count)
+            logger.info(f"Active sessions: {active_count} (removed {session_id})")
             
             logger.info(f"Kết thúc phiên: {session_id}")
         except Exception as e:

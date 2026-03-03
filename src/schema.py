@@ -97,10 +97,6 @@ class Message:
 
 @dataclass
 class StructuredQueryObject:
-    """
-    Trích ra từ câu hỏi của người dùng dưới dạng có cấu trúc để sử dụng trong các bước tiếp theo.
-    Ở đây bao gồm các trường quan trọng để xác định ý định và ngữ cảnh của người dùng.
-    """
     service: ServiceEnum
     problem_type: ProblemTypeEnum
     condensed_query: str  # query của người dùng đã được chuẩn hóa cho vector search và semantic retrieval

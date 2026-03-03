@@ -169,17 +169,52 @@ async def prometheus_metrics():
     lines.append("# TYPE vnpt_requests_total counter")
     lines.append(f"vnpt_requests_total {total_requests}")
     
-    # Requests per minute
+    # Requests per minute - calculate dynamically from timestamps
     rpm = float(get_redis_value("metrics:gauge:requests_per_minute", 0))
+    # Also calculate from sorted set if available
+    client = get_redis_client()
+    if client:
+        try:
+            now = time.time()
+            one_min_ago = now - 60
+            rpm_from_ts = client.zcount("metrics:request_timestamps", one_min_ago, now)
+            if rpm_from_ts > 0:
+                rpm = float(rpm_from_ts)
+        except Exception:
+            pass
     lines.append("# HELP vnpt_requests_per_minute Current request rate per minute")
     lines.append("# TYPE vnpt_requests_per_minute gauge")
     lines.append(f"vnpt_requests_per_minute {rpm:.2f}")
     
-    # Active sessions
+    # Active sessions - read from gauge, fallback to counting session set
     active_sessions = int(get_redis_value("metrics:gauge:active_sessions", 0))
+    if active_sessions == 0 and client:
+        try:
+            # Fallback: count from Redis SET
+            set_count = client.scard("metrics:active_session_ids")
+            if set_count and set_count > 0:
+                active_sessions = set_count
+        except Exception:
+            pass
     lines.append("# HELP vnpt_active_sessions Number of active sessions")
     lines.append("# TYPE vnpt_active_sessions gauge")
     lines.append(f"vnpt_active_sessions {active_sessions}")
+    
+    # Concurrent users (from load test or real-time)
+    concurrent_users = int(get_redis_value("metrics:gauge:concurrent_users", 0))
+    lines.append("# HELP vnpt_concurrent_users Number of concurrent users processing requests")
+    lines.append("# TYPE vnpt_concurrent_users gauge")
+    lines.append(f"vnpt_concurrent_users {concurrent_users}")
+    
+    # Load test info
+    load_test_running = int(get_redis_value("metrics:gauge:load_test_running", 0))
+    load_test_max_users = int(get_redis_value("metrics:gauge:load_test_concurrent_users", 0))
+    lines.append("# HELP vnpt_load_test_running Whether a load test is currently running")
+    lines.append("# TYPE vnpt_load_test_running gauge")
+    lines.append(f"vnpt_load_test_running {load_test_running}")
+    lines.append("# HELP vnpt_load_test_max_concurrent Max concurrent users configured in load test")
+    lines.append("# TYPE vnpt_load_test_max_concurrent gauge")
+    lines.append(f"vnpt_load_test_max_concurrent {load_test_max_users}")
     
     # ==================== Latency Metrics ====================
     latency_values = []
@@ -247,7 +282,9 @@ async def prometheus_metrics():
     
     # ==================== Confidence Metrics ====================
     confidence_values = []
-    raw_conf = get_redis_list("metrics:histogram:confidence")
+    raw_conf = get_redis_list("metrics:histogram:confidence_score")
+    if not raw_conf:
+        raw_conf = get_redis_list("metrics:histogram:confidence")
     for v in raw_conf:
         try:
             confidence_values.append(float(v))
@@ -321,18 +358,45 @@ async def json_metrics():
     else:
         latency_stats = {"avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0}
     
+    # Calculate RPM dynamically
+    rpm = float(get_redis_value("metrics:gauge:requests_per_minute", 0))
+    client = get_redis_client()
+    if client:
+        try:
+            now = time.time()
+            rpm_from_ts = client.zcount("metrics:request_timestamps", now - 60, now)
+            if rpm_from_ts > 0:
+                rpm = float(rpm_from_ts)
+        except Exception:
+            pass
+    
+    # Active sessions - from gauge, fallback to Redis SET
+    active_sessions = int(get_redis_value("metrics:gauge:active_sessions", 0))
+    if active_sessions == 0 and client:
+        try:
+            set_count = client.scard("metrics:active_session_ids")
+            if set_count and set_count > 0:
+                active_sessions = set_count
+        except Exception:
+            pass
+    
     return {
         "timestamp": time.time(),
         "requests": {
             "total": total_requests,
-            "per_minute": float(get_redis_value("metrics:gauge:requests_per_minute", 0))
+            "per_minute": rpm
         },
         "latency": latency_stats,
         "errors": {
             "total": int(get_redis_value("metrics:counter:errors_total", 0))
         },
         "sessions": {
-            "active": int(get_redis_value("metrics:gauge:active_sessions", 0))
+            "active": active_sessions,
+            "concurrent_users": int(get_redis_value("metrics:gauge:concurrent_users", 0))
+        },
+        "load_test": {
+            "running": bool(int(get_redis_value("metrics:gauge:load_test_running", 0))),
+            "max_concurrent": int(get_redis_value("metrics:gauge:load_test_concurrent_users", 0))
         },
         "health": {
             "neo4j": check_service_health("neo4j"),
